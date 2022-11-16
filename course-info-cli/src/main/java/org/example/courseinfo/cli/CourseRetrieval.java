@@ -6,11 +6,10 @@ import org.example.courseinfo.cli.service.CourseStorageService;
 import org.example.courseinfo.cli.service.NetHttpClient;
 import org.example.courseinfo.cli.service.PluralsightCourseApi;
 import org.example.courseinfo.repository.CourseRepository;
-import org.example.functional.LazyList;
-import org.example.functional.Result;
-import org.example.functional.Unit;
+import org.example.courseinfo.types.Unit;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import reactor.core.publisher.Mono;
 
 import java.net.http.HttpClient;
 
@@ -24,12 +23,13 @@ public class CourseRetrieval {
         LOG.info("Course retrieval started.");
 
         Configuration.parse(args)
-            .adaptError(error -> new RuntimeException("Failed to parse configuration.", error))
+            .onErrorMap(error -> new RuntimeException("Failed to parse configuration.", error))
             .flatMap(CourseRetrieval::retrieveCourses)
-            .logError("A failure has occurred while running the course retrieval program.", LOG);
+            .doOnError(error -> LOG.error("A failure has occurred while running the course retrieval program."))
+            .block();
     }
 
-    private static Result<Unit> retrieveCourses(Configuration config) {
+    private static Mono<Unit> retrieveCourses(Configuration config) {
         LOG.info("Retrieving courses for author '{}'.", config.author());
 
         CourseRetrievalService courseRetrievalService =
@@ -47,9 +47,20 @@ public class CourseRetrieval {
 
         return courseRetrievalService
             .getCoursesFor(config.author())
-            .map(courses -> courses.filter(not(PluralsightCourseApi::isRetired)))
-            .log(r -> "Retrieved the following " + r.length() + " courses " + r, LOG)
-            .flatMap(courseStorageService::store)
-            .log(unit -> "Courses successfully stored.", LOG);
+            .filter(not(PluralsightCourseApi::isRetired))
+            .transform(coursesStream ->
+                coursesStream
+                    .collectList()
+                    .flatMapMany(courses -> {
+                        LOG.info("Retrieved {} courses.", courses.size());
+                        return coursesStream;
+                    })
+            )
+            .transform(courseStorageService::store)
+            .collect(Unit.collector)
+            .map(unit -> {
+                LOG.info("Course retrieval completed successfully.");
+                return unit;
+            });
     }
 }

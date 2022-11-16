@@ -1,6 +1,6 @@
 package org.example.courseinfo.cli.service;
 
-import org.example.functional.Result;
+import reactor.core.publisher.Mono;
 
 import java.io.IOException;
 import java.net.http.HttpClient;
@@ -16,11 +16,15 @@ public class NetHttpClient implements ResultHttpClient {
     }
 
     @Override
-    public Result<HttpResponse<String>> send(HttpRequest request) {
-        try {
-            return Result.success(client.send(request, HttpResponse.BodyHandlers.ofString()));
-        } catch (IOException | InterruptedException e) {
-            return Result.failure(new RuntimeException("Http request failed", e));
-        }
+    public Mono<HttpResponse<String>> send(HttpRequest request) {
+        return Mono.defer(() -> {
+            try {
+                // blocking call here makes the non-blocking IO useless :(
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                return Mono.just(response);
+            } catch (IOException | InterruptedException e) {
+                return Mono.error(new RuntimeException("Http request failed", e));
+            }
+        });
     }
 }

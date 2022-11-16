@@ -1,14 +1,15 @@
 package org.example.courseinfo.repository;
 
 import org.example.courseinfo.domain.Course;
-import org.example.functional.*;
+import org.example.courseinfo.types.Unit;
 import org.h2.jdbcx.JdbcDataSource;
+
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 import javax.sql.DataSource;
 import java.sql.*;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.List;
+import java.util.Optional;
 
 class CourseJdbcRepository implements CourseRepository {
 
@@ -16,6 +17,10 @@ class CourseJdbcRepository implements CourseRepository {
     private static final String INSERT_COURSE = """
         MERGE INTO Courses (id, name, length, url)
         VALUES (?, ?, ?, ?)
+        """;
+
+    private static final String INSERT_NOTES = """
+        UPDATE Courses SET notes = ? WHERE id = ?
         """;
 
     private final DataSource dataSource;
@@ -27,45 +32,60 @@ class CourseJdbcRepository implements CourseRepository {
     }
 
     @Override
-    public Result<Unit> save(Course course) {
-        try (Connection connection = dataSource.getConnection()) {
-            PreparedStatement statement = connection.prepareStatement(INSERT_COURSE);
-            statement.setString(1, course.id());
-            statement.setString(2, course.name());
-            statement.setLong(3, course.length());
-            statement.setString(4, course.url());
-            return Result.success(statement.executeUpdate()).unit();
-        } catch (SQLException e) {
-            return Result.failure(new RepositoryException("Failed to save course '%s'".formatted(course), e));
-        }
+    public Mono<Unit> save(Course course) {
+        return Mono.defer(() -> {
+            try (Connection connection = dataSource.getConnection()) {
+                PreparedStatement statement = connection.prepareStatement(INSERT_COURSE);
+                statement.setString(1, course.id());
+                statement.setString(2, course.name());
+                statement.setLong(3, course.length());
+                statement.setString(4, course.url());
+                statement.executeUpdate();
+                return Mono.just(Unit.get);
+            } catch (SQLException e) {
+                return Mono.error(e);
+            }
+        });
     }
 
     @Override
-    public Result<LazyList<Course>> getAll() {
-        try(Connection connection = dataSource.getConnection()) {
-            Statement statement = connection.createStatement();
+    public Flux<Course> getAll() {
+        return Flux.defer(() -> {
+            try(Connection connection = dataSource.getConnection()) {
+                Statement statement = connection.createStatement();
 
-            return Result.success(
-                LazyList.resultSet(
-                    statement.executeQuery("SELECT * FROM Courses"),
-                    r -> {
-                        try {
-                            return Result.success(
-                                new Course(
-                                    r.getString("id"),
-                                    r.getString("name"),
-                                    r.getLong("length"),
-                                    r.getString("url")
-                                )
-                            );
-                        } catch (SQLException e) {
-                            return Result.failure(e);
-                        }
-                    }
-                )
-            );
+                ResultSet resultSet = statement.executeQuery("SELECT * FROM Courses");
+
+                Flux<Course> courses = Flux.empty();
+
+                // yuck
+                while (resultSet.next()) {
+                    String id = resultSet.getString("id");
+                    String name = resultSet.getString("name");
+                    long length = resultSet.getLong("length");
+                    String url = resultSet.getString("url");
+                    Optional<String> notes = Optional.ofNullable(resultSet.getString("notes"));
+
+                    courses = courses.concatWith(Mono.just(new Course(id, name, length, url, notes)));
+                }
+
+                return courses;
+            } catch (SQLException e) {
+                return Flux.error(new RepositoryException("Failed to get all courses", e));
+            }
+        });
+    }
+
+    @Override
+    public Mono<Unit> addNotes(String id, String notes) {
+        try (Connection connection = dataSource.getConnection()) {
+            PreparedStatement statement = connection.prepareStatement(INSERT_NOTES);
+            statement.setString(1, notes);
+            statement.setString(2, id);
+            statement.executeUpdate();
+            return Mono.just(Unit.get);
         } catch (SQLException e) {
-            return Result.failure(new RepositoryException("Failed to get all courses", e));
+            return Mono.error(new RepositoryException("Failed to add notes to " + id, e));
         }
     }
 }

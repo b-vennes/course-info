@@ -1,8 +1,7 @@
 package org.example.courseinfo.cli.service;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
-import org.example.functional.LazyList;
-import org.example.functional.Result;
+import reactor.core.publisher.Flux;
 
 import java.io.IOException;
 import java.net.URI;
@@ -13,7 +12,7 @@ public record CourseRetrievalService(ResultHttpClient client, ObjectMapper objec
 
     private static final String PS_URI = "https://app.pluralsight.com/profile/data/author/%s/all-content";
 
-    public Result<LazyList<PluralsightCourseApi>> getCoursesFor(String author) {
+    public Flux<PluralsightCourseApi> getCoursesFor(String author) {
         return client
             .send(
                 HttpRequest.newBuilder()
@@ -21,31 +20,31 @@ public record CourseRetrievalService(ResultHttpClient client, ObjectMapper objec
                     .GET()
                     .build()
             )
-            .adaptError(error -> new RuntimeException("Failed to retrieve courses from the Pluralsight API.", error))
+            .onErrorMap(error -> new RuntimeException("Failed to retrieve courses from the Pluralsight API.", error))
+            .flux()
             .flatMap(response ->
                 response.statusCode() == 200 ?
                     parseResponse(response.body()) :
-                    Result.failure(
+                    Flux.error(
                         new RuntimeException("Pluralsight API call failed with status code: " + response.statusCode())
                     )
-            )
-            .map(LazyList::list);
+            );
     }
 
-    private Result<List<PluralsightCourseApi>> parseResponse(String json) {
-        return Result.success(json)
+    private Flux<PluralsightCourseApi> parseResponse(String json) {
+        return Flux.just(json)
             .flatMap(body -> {
                 try {
-                    return Result.success(
-                        objectMapper.readValue(
-                            body,
-                            objectMapper
-                                .getTypeFactory()
-                                .constructCollectionType(List.class, PluralsightCourseApi.class)
-                        )
+                    List<PluralsightCourseApi> courses = objectMapper.readValue(
+                        body,
+                        objectMapper
+                            .getTypeFactory()
+                            .constructCollectionType(List.class, PluralsightCourseApi.class)
                     );
+
+                    return Flux.fromIterable(courses);
                 } catch (IOException e) {
-                    return Result.failure(new RuntimeException("Failed to deserialize response from Pluralsight", e));
+                    return Flux.error(new RuntimeException("Failed to deserialize response from Pluralsight", e));
                 }
             });
     }
